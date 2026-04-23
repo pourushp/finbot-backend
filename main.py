@@ -34,4 +34,15 @@ app.include_router(crypto.router, prefix="/api/crypto", tags=["Crypto"])
 app.include_router(commodities.router, prefix="/api/commodities", tags=["Commodities"])
 app.include_router(portfolio.router, prefix="/api/portfolio", tags=["Portfolio"])
 app.include_router(news.router, prefix="/api/news", tags=["News"])
-app.include_router(mutual_funds.router, prefix="/api
+app.include_router(mutual_funds.router, prefix="/api/mf", tags=["Mutual Funds"])
+app.include_router(ai_chat.router, prefix="/api/ai", tags=["AI Assistant"])
+
+
+@app.get("/")
+def root():
+    return {"status": "ok", "message": "Financial Personal Assistant API v1.0"}
+
+
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
