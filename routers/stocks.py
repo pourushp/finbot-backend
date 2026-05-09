@@ -4,8 +4,24 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 router = APIRouter()
+
+# ─── Simple in-memory cache ────────────────────────────────────────────────
+_cache = {}
+CACHE_TTL = 120  # seconds
+
+def _get_cached(key):
+    if key in _cache:
+        val, ts = _cache[key]
+        if time.time() - ts < CACHE_TTL:
+            return val
+    return None
+
+def _set_cached(key, val):
+    _cache[key] = (val, time.time())
 
 # Major Indian indices
 INDIAN_INDICES = {
@@ -64,31 +80,52 @@ def ticker_info_to_dict(ticker_sym: str) -> dict:
         return None
 
 
+def _fetch_single_index(name, symbol):
+    """Fetch a single index with timeout protection."""
+    try:
+        t = yf.Ticker(symbol)
+        hist = t.history(period="2d")
+        if hist.empty:
+            return None
+        latest = hist.iloc[-1]
+        prev = hist.iloc[-2] if len(hist) > 1 else hist.iloc[-1]
+        change = latest["Close"] - prev["Close"]
+        change_pct = (change / prev["Close"]) * 100 if prev["Close"] else 0
+        return {
+            "name": name,
+            "symbol": symbol,
+            "price": safe_float(latest["Close"]),
+            "change": safe_float(change),
+            "change_pct": safe_float(change_pct),
+            "high": safe_float(latest["High"]),
+            "low": safe_float(latest["Low"]),
+        }
+    except Exception:
+        return None
+
+
 @router.get("/indices")
 def get_indices():
-    """Get all major Indian market indices."""
+    """Get all major Indian market indices (parallel fetch with cache)."""
+    cached = _get_cached("indices")
+    if cached is not None:
+        return cached
+
     results = []
-    for name, symbol in INDIAN_INDICES.items():
-        try:
-            t = yf.Ticker(symbol)
-            hist = t.history(period="2d")
-            if hist.empty:
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {
+            executor.submit(_fetch_single_index, name, symbol): name
+            for name, symbol in INDIAN_INDICES.items()
+        }
+        for future in as_completed(futures, timeout=15):
+            try:
+                data = future.result(timeout=10)
+                if data:
+                    results.append(data)
+            except Exception:
                 continue
-            latest = hist.iloc[-1]
-            prev = hist.iloc[-2] if len(hist) > 1 else hist.iloc[-1]
-            change = latest["Close"] - prev["Close"]
-            change_pct = (change / prev["Close"]) * 100 if prev["Close"] else 0
-            results.append({
-                "name": name,
-                "symbol": symbol,
-                "price": safe_float(latest["Close"]),
-                "change": safe_float(change),
-                "change_pct": safe_float(change_pct),
-                "high": safe_float(latest["High"]),
-                "low": safe_float(latest["Low"]),
-            })
-        except Exception:
-            continue
+
+    _set_cached("indices", results)
     return results
 
 
@@ -233,15 +270,26 @@ def get_earnings_batch(symbols: str = Query(..., description="Comma-separated sy
 
 @router.get("/movers")
 def get_top_movers():
-    """Get top gainers and losers from NSE."""
+    """Get top gainers and losers from NSE (parallel fetch with cache)."""
+    cached = _get_cached("movers")
+    if cached is not None:
+        return cached
+
     results = []
-    for sym in POPULAR_STOCKS:
-        data = ticker_info_to_dict(sym)
-        if data:
-            results.append(data)
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(ticker_info_to_dict, sym): sym for sym in POPULAR_STOCKS}
+        for future in as_completed(futures, timeout=20):
+            try:
+                data = future.result(timeout=10)
+                if data:
+                    results.append(data)
+            except Exception:
+                continue
 
     gainers = sorted([r for r in results if r.get("change_pct", 0) > 0],
                      key=lambda x: x.get("change_pct", 0), reverse=True)[:5]
     losers = sorted([r for r in results if r.get("change_pct", 0) < 0],
                     key=lambda x: x.get("change_pct", 0))[:5]
-    return {"gainers": gainers, "losers": losers}
+    result = {"gainers": gainers, "losers": losers}
+    _set_cached("movers", result)
+    return result
