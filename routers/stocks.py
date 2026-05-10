@@ -23,6 +23,7 @@ def _get_cached(key):
 
 def _set_cached(key, val):
     _cache[key] = (val, time.time())
+
 # --- NSE Session Management ---
 _nse_session = None
 _nse_session_ts = 0
@@ -117,6 +118,7 @@ def safe_float(val):
         return round(float(val), 2)
     except (TypeError, ValueError):
         return None
+
 # --- Mappings ---
 INDIAN_INDICES = {
     "NIFTY 50": "^NSEI",
@@ -392,14 +394,15 @@ def get_top_movers():
                     "volume": None, "change": safe_float(stock.get("change")),
                     "change_pct": safe_float(pct), "market_cap": None, "currency": "INR",
                 })
-    # Fallback: Google Finance for popular stocks
+    # Fallback: Google Finance for top stocks (reduced set for speed)
     if len(results) < 5:
         results = []
+        top_stocks = POPULAR_STOCKS[:8]
         with ThreadPoolExecutor(max_workers=8) as executor:
-            futures = {executor.submit(_fetch_stock_quote, sym): sym for sym in POPULAR_STOCKS}
-            for future in as_completed(futures, timeout=15):
+            futures = {executor.submit(_fetch_stock_quote, sym): sym for sym in top_stocks}
+            for future in as_completed(futures, timeout=10):
                 try:
-                    data = future.result(timeout=10)
+                    data = future.result(timeout=6)
                     if data:
                         results.append(data)
                 except Exception:
